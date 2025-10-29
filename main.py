@@ -61,6 +61,9 @@ while station.isconnected() == False:
 print('Connected to:', ssid)
 print(station.ifconfig())
 
+# check for new software versions
+import test_ota
+
 device_topic = "homeassistant/device/" + uid_str + "/config"
 
 #**************************************
