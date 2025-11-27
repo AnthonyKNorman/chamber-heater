@@ -1,15 +1,9 @@
-# This file is executed on every boot (including wake-boot from deepsleep)
-#import esp
-#esp.osdebug(None)
-#import webrepl
-#webrepl.start()
-# Complete project details at https://RandomNerdTutorials.com/micropython-programming-with-esp32-and-esp8266/
-
 import time
 from umqttsimple import MQTTClient
 import ubinascii
-import machine
+import machine, neopixel
 import micropython
+import uos
 import esp
 esp.osdebug(None)
 import gc
@@ -18,24 +12,55 @@ from payload import device_payload
 import json
 from WIFI_CONFIG import MQTT_SERVER, MQTT_USER, MQTT_PASS
 
+device_name = "heater"
+
+print(uos.uname())
+machine_name = uos.uname().machine
+if 'C3' in machine_name:
+    machine_id = 'C3'
+elif 'S3' in machine_name:
+    machine_id = 'S3'
+else:
+    machine_id = 'unknown'
+    
+print('Machine ID:', machine_id)    
+
 client_id = ubinascii.hexlify(machine.unique_id())
 uid_str = ubinascii.hexlify(machine.unique_id()).decode()
 
-device_payload["dev"]["name"] = "Chamber Heater " + uid_str
-device_payload["o"]["name"] = "Chamber Heater " + uid_str
+print('-----------------------------------')
+device_payload["dev"]["name"] = device_name + '(' + uid_str + ')'
+device_payload["o"]["name"] = device_name + '(' + uid_str + ')'
 device_payload["dev"]["ids"] = uid_str
 
-device_payload["cmps"]["switch1"]["unique_id"] = uid_str + "aa"
-cmd_topic = "heater/" + uid_str + "/switch/cmd"
-state_topic = "heater/" + uid_str + "/switch/state"
-device_payload["cmps"]["switch1"]["state_topic"] = state_topic
-device_payload["cmps"]["switch1"]["command_topic"] = cmd_topic
+entity_count = 0
+
+for entity in device_payload["cmps"]:
+    entity_name = device_payload["cmps"][entity]["name"].replace(" ", "_").lower()
+    try:
+        device_payload["cmps"][entity]["state_topic"] = device_name + '/' + uid_str + '/' + entity_name + '/state'
+    except:
+        print('no state topic')
+        
+    try:    
+        device_payload["cmps"][entity]["command_topic"] = device_name + '/' + uid_str + '/' + entity_name + '/cmd'
+    except:
+        print('no command topic')
+        
+    device_payload["cmps"][entity]["unique_id"] = uid_str + str(entity_count)
+    print (device_payload["cmps"][entity])
+    
+    entity_count += 1
+        
+print('-----------------------------------')
 
 device_payload_dump = json.dumps(device_payload)
-
+print('this is the payload')
 print(device_payload_dump)
-
-topic_sub = b'heater/#'
+topic_sub_string = device_name + '/' + uid_str + '/#'
+topic_sub = bytearray()
+topic_sub.extend(topic_sub_string)
+print('topic_sub ',topic_sub)
 
 last_message = 0
 message_interval = 300
@@ -44,30 +69,45 @@ counter = 0
 device_topic = "homeassistant/device/" + uid_str + "/config"
 
 #**************************************
+#    Return Topics as string
+#    takes: entity as string
+#    returns: topic as string
+#**************************************
+
+def state_topic(entity):
+    return device_payload["cmps"][entity]["state_topic"]
+
+
+def cmd_topic(entity):
+    return device_payload["cmps"][entity]["command_topic"]
+
+#**************************************
 #    Handle incoming messages
-#*************************************
-    
+#**************************************
+
 def sub_cb(topic, msg):
-  print((topic, msg))
+  print('received: ',topic, msg)
   global heater_cmd
-  
+  str_topic = topic.decode('utf-8')
   # heater on / off message
-  byte_cmd_topic = bytearray()
-  byte_cmd_topic.extend(cmd_topic)
-  
-  if topic == byte_cmd_topic:
+  if str_topic == cmd_topic('switch1'):
     print('heater on/off message received')
     if msg == b'ON':
       heater_cmd = 'ON'
     else:
       heater_cmd = 'OFF'
 
+#**************************************
+#   MQTT
+#**************************************
         
 def connect_and_subscribe():
   global client_id, MQTT_SERVER, topic_sub
   client = MQTTClient(client_id, MQTT_SERVER, user=MQTT_USER, password=MQTT_PASS)
   client.set_callback(sub_cb)
   client.connect()
+  
+  
   client.subscribe(topic_sub)
   print('Connected to %s MQTT broker, subscribed to %s topic' % (MQTT_SERVER, topic_sub))
   return client
@@ -76,30 +116,53 @@ def restart_and_reconnect():
   print('Failed to connect to MQTT broker. Reconnecting...')
   time.sleep(10)
   machine.reset()
-    
+
+#**************************************
+#   Manage heater based on received command
+#**************************************
 def update_heater_state():
     print("heater cmd", heater_cmd)
     if heater_cmd == 'ON':
       heater.on()
       fan.on()
-      led.off()
+      led_on()
       msg = 'ON'
     else:
       heater.off()
       fan.off()
-      led.on()
+      led_off()
       msg = 'OFF'
       
     print("about to publish heater state")
-    byte_state_topic = bytearray()
-    byte_state_topic.extend(state_topic)
+    client.publish(state_topic('switch1'), msg)
+    
+#**************************************
+#   LED Management
+#**************************************    
 
-    client.publish(byte_state_topic, msg)    
+def led_off():
+    global machine_id
+    global np
+    if machine_id == 'C3':
+        led.value(1)
+    elif machine_id == 'S3':
+        np[0] = (255,0,0)	#red
+        np.write()
 
+def led_on():
+    global machine_id
+    global np
+    if machine_id == 'C3':
+        led.value(0)
+    elif machine_id == 'S3':
+        np[0] = (0,255,0)	#red
+        np.write()
+    
+        
     
 #**************************************
 #    Setup
-#**************************************    
+#**************************************
 
 try:
   client = connect_and_subscribe()
@@ -108,18 +171,38 @@ except OSError as e:
   
 client.publish(device_topic, device_payload_dump)
 
-heater = machine.Pin(4, machine.Pin.OUT)
 fan = machine.Pin(9, machine.Pin.OUT)
-led = machine.Pin(8, machine.Pin.OUT)
+heater = machine.Pin(4, machine.Pin.OUT)
 heater.off()
 fan.off()
 
-for i in range (10):
-    led.value(not led.value())
-    time.sleep_ms(500)
-    
-led.off()
+# simple led on GPIO4
+if machine_id == 'C3':
+    led = machine.Pin(8, machine.Pin.OUT)
+# neopixel on GPIO48
+elif machine_id == 'S3':
+    n = 1
+    p = 48
+    np = neopixel.NeoPixel(machine.Pin(p), n)
 
+
+for i in range (10):
+    led_on()
+    time.sleep_ms(500)
+    led_off()
+    time.sleep_ms(500)
+
+
+# Send the latest software version
+# get the current version (stored in version.json)
+if 'version.json' in uos.listdir():    
+    with open('version.json') as f:
+        current_version = int(json.load(f)['version'])
+    print(f"Current device firmware version is '{current_version}'")
+    client.publish(state_topic('version'), str(current_version))
+    
+client.publish(state_topic('ssid'), SSID)
+    
 # set the two flags different to force heater off to start
 heater_cmd = 'OFF'
 last_heater_cmd = 'ON'
@@ -133,11 +216,19 @@ while True:
     client.check_msg()
     
     if (time.time() - last_message) > message_interval:
+        
+      print('sending device info')
       client.publish(device_topic, device_payload_dump)
+      
+      print('sending wifi strength')
+      strength = wlan.status('rssi')
+      client.publish(state_topic('strength'), str(strength))
+      
+      client.publish(state_topic('ssid'), SSID)
+
 
       last_message = time.time()
       counter += 1
-      
   except OSError as e:
     print("OS error:", e)
     restart_and_reconnect()
@@ -146,4 +237,4 @@ while True:
       print("heater command", heater_cmd)
       last_heater_cmd = heater_cmd
       update_heater_state()
-
+      
