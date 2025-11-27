@@ -123,13 +123,11 @@ def restart_and_reconnect():
 def update_heater_state():
     print("heater cmd", heater_cmd)
     if heater_cmd == 'ON':
-      heater.on()
-      fan.on()
+      heater.duty(800)
       led_on()
       msg = 'ON'
     else:
-      heater.off()
-      fan.off()
+      heater.duty(0)
       led_off()
       msg = 'OFF'
       
@@ -171,10 +169,10 @@ except OSError as e:
   
 client.publish(device_topic, device_payload_dump)
 
-fan = machine.Pin(9, machine.Pin.OUT)
-heater = machine.Pin(4, machine.Pin.OUT)
-heater.off()
-fan.off()
+heater_pin = machine.Pin(4)
+heater = machine.PWM(heater_pin)
+heater.freq(50)
+heater.duty(0)
 
 # simple led on GPIO4
 if machine_id == 'C3':
@@ -238,4 +236,5 @@ while True:
       last_heater_cmd = heater_cmd
       update_heater_state()
       
+
 
